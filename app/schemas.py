@@ -17,6 +17,7 @@ class BootstrapResponse(BaseModel):
 class CompleteProfileRequest(BaseModel):
     external_id: str
     department: str
+    name: str | None = None
 
 
 class SyncOp(BaseModel):

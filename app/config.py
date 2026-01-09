@@ -49,6 +49,13 @@ def get_settings() -> Settings:
     if firebase_service_account_json_raw:
         firebase_service_account_json = json.loads(firebase_service_account_json_raw)
 
+    # Optional: support base64-encoded JSON for platforms that prefer it
+    firebase_service_account_json_b64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_B64")
+    if not firebase_service_account_json and firebase_service_account_json_b64:
+        import base64
+        decoded = base64.b64decode(firebase_service_account_json_b64)
+        firebase_service_account_json = json.loads(decoded)
+
     return Settings(
         database_url=database_url,
         firebase_service_account_file=firebase_service_account_file,

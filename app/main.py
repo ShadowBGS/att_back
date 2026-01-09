@@ -3,7 +3,10 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import json
 import logging
+import os
+import tempfile
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -23,6 +26,14 @@ from .schemas import (
 )
 
 settings = get_settings()
+
+# Initialize Firebase Admin SDK
+svc_env = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+if svc_env:
+    path = os.path.join(tempfile.gettempdir(), "firebase.json")
+    with open(path, "w") as f:
+        f.write(svc_env)
+    os.environ["FIREBASE_SERVICE_ACCOUNT_FILE"] = path
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +128,10 @@ def complete_profile(
 
         user.external_id = body.external_id.strip()
         user.department = body.department.strip()
+        if getattr(body, "name", None):
+            name_val = (body.name or "").strip()
+            if name_val:
+                user.name = name_val
         user.profile_completed = True
         
         # Create Student or Lecturer record
