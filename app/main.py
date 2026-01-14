@@ -128,8 +128,9 @@ def complete_profile(
 
         user.external_id = body.external_id.strip()
         user.department = body.department.strip()
-        if getattr(body, "name", None):
-            name_val = (body.name or "").strip()
+        # Update name if provided (for email registration)
+        if body.name:
+            name_val = body.name.strip()
             if name_val:
                 user.name = name_val
         user.profile_completed = True
