@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import Depends, FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,14 @@ from .schemas import (
     BootstrapRequest,
     BootstrapResponse,
     CompleteProfileRequest,
+    CourseRequest,
+    CourseResponse,
+    CourseListItem,
+    CourseListResponse,
+    SessionCreateRequest,
+    SessionResponse,
+    StudentSummary,
+    AttendanceRow,
     SyncPullResponse,
     SyncPushRequest,
     SyncPushResponse,
@@ -248,6 +258,330 @@ def sync_push(
     # TODO: Validate ops and apply to Neon.
     results = [SyncPushResult(op_id=op.op_id, ok=True) for op in body.ops]
     return SyncPushResponse(results=results, cursor=None)
+
+
+@app.post("/courses/create", response_model=CourseResponse)
+def create_course(
+    body: CourseRequest,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> CourseResponse:
+    """Create a new course (lecturer only)"""
+    try:
+        from app.models import Course, Lecturer
+        
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can create courses")
+        
+        # Get lecturer record
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+        
+        # Check if course code already exists
+        existing = db.query(Course).filter(Course.course_code == body.course_code.strip().upper()).one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail="Course code already exists")
+        
+        # Create course
+        course = Course(
+            course_code=body.course_code.strip().upper(),
+            course_name=body.course_name.strip(),
+            lecturer_id=lecturer.lecturer_id,
+        )
+        db.add(course)
+        db.commit()
+        db.refresh(course)
+        
+        logger.info(f"Created course {course.course_id}: {course.course_code}")
+        
+        return CourseResponse(
+            course_id=course.course_id,
+            course_code=course.course_code,
+            course_name=course.course_name,
+            lecturer_id=course.lecturer_id,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Create course DB error")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create course (database error).",
+        ) from e
+    except Exception as e:
+        logger.exception("Create course unexpected error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create course.") from e
+
+
+@app.get("/courses/my-courses")
+def get_my_courses(
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+)-> CourseListResponse:
+    """Get courses for the authenticated user.
+
+    Note: student enrollments are not implemented on the backend yet.
+    """
+    try:
+        from app.models import Course, Lecturer
+        
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'lecturer':
+            return CourseListResponse(courses=[])
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            return CourseListResponse(courses=[])
+
+        courses = db.query(Course).filter(Course.lecturer_id == lecturer.lecturer_id).all()
+        return CourseListResponse(
+            courses=[
+                CourseListItem(
+                    course_id=c.course_id,
+                    course_code=c.course_code,
+                    course_name=c.course_name,
+                    lecturer_id=c.lecturer_id,
+                )
+                for c in courses
+            ]
+        )
+    except Exception as e:
+        logger.exception("Get courses error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve courses.") from e
+
+
+@app.get("/courses/{course_id}/sessions", response_model=list[SessionResponse])
+def get_course_sessions(
+    course_id: int,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> list[SessionResponse]:
+    """Get sessions for a course (lecturer only for now)."""
+    try:
+        from app.models import Course, Lecturer, Session as DbSession
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can view sessions")
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+
+        course = db.query(Course).filter(Course.course_id == course_id).one_or_none()
+        if not course or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=404, detail="Course not found")
+
+        sessions = (
+            db.query(DbSession)
+            .filter(DbSession.course_id == course_id)
+            .order_by(DbSession.start_time.desc())
+            .all()
+        )
+
+        return [
+            SessionResponse(
+                session_id=s.session_id,
+                course_id=s.course_id,
+                start_time=s.start_time.isoformat(),
+                end_time=s.end_time.isoformat(),
+                qr_code=s.qr_code,
+            )
+            for s in sessions
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Get course sessions error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve sessions.") from e
+
+
+@app.post("/sessions/create", response_model=SessionResponse)
+def create_session(
+    body: SessionCreateRequest,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> SessionResponse:
+    """Create a new attendance session for a course (lecturer only)."""
+    try:
+        from app.models import Course, Lecturer, Session as DbSession
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can start sessions")
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+
+        course = db.query(Course).filter(Course.course_id == body.course_id).one_or_none()
+        if not course or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=404, detail="Course not found")
+
+        now = datetime.now(timezone.utc)
+        end_time = now + timedelta(hours=1)
+
+        sess = DbSession(course_id=body.course_id, start_time=now, end_time=end_time, qr_code=None)
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+
+        return SessionResponse(
+            session_id=sess.session_id,
+            course_id=sess.course_id,
+            start_time=sess.start_time.isoformat(),
+            end_time=sess.end_time.isoformat(),
+            qr_code=sess.qr_code,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Create session DB error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create session (database error).") from e
+    except Exception as e:
+        logger.exception("Create session error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create session.") from e
+
+
+@app.get("/sessions/{session_id}/attendance", response_model=list[AttendanceRow])
+def get_session_attendance(
+    session_id: int,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> list[AttendanceRow]:
+    """Get attendance records for a session (lecturer only)."""
+    try:
+        from app.models import Attendance, Course, Lecturer, Session as DbSession, Student
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can view attendance")
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+
+        sess = db.query(DbSession).filter(DbSession.session_id == session_id).one_or_none()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        course = db.query(Course).filter(Course.course_id == sess.course_id).one_or_none()
+        if not course or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        records = db.query(Attendance).filter(Attendance.session_id == session_id).all()
+
+        rows: list[AttendanceRow] = []
+        for rec in records:
+            student = db.query(Student).filter(Student.student_id == rec.student_id).one_or_none()
+            user_row = db.query(User).filter(User.id == student.user_id).one_or_none() if student else None
+
+            rows.append(
+                AttendanceRow(
+                    attendance_id=rec.attendance_id,
+                    session_id=rec.session_id,
+                    status=rec.status,
+                    timestamp=rec.timestamp.isoformat(),
+                    verified=rec.verified,
+                    student=StudentSummary(
+                        student_id=rec.student_id,
+                        firebase_uid=user_row.firebase_uid if user_row else None,
+                        name=user_row.name if user_row else None,
+                        email=user_row.email if user_row else None,
+                        matric_no=student.matric_no if student else None,
+                        department=student.department if student else None,
+                    ),
+                )
+            )
+
+        return rows
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Get session attendance error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve attendance.") from e
+
+
+@app.get("/courses/{course_id}/students", response_model=list[StudentSummary])
+def get_course_students(
+    course_id: int,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> list[StudentSummary]:
+    """Return students who have attendance records in this course.
+
+    Since enrollments aren't modeled on the backend yet, we derive the roster from attendance.
+    """
+    try:
+        from app.models import Attendance, Course, Lecturer, Session as DbSession, Student
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can view students")
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+
+        course = db.query(Course).filter(Course.course_id == course_id).one_or_none()
+        if not course or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=404, detail="Course not found")
+
+        session_ids = [s.session_id for s in db.query(DbSession).filter(DbSession.course_id == course_id).all()]
+        if not session_ids:
+            return []
+
+        student_ids = {
+            row[0]
+            for row in db.query(Attendance.student_id)
+            .filter(Attendance.session_id.in_(session_ids))
+            .distinct()
+            .all()
+        }
+        if not student_ids:
+            return []
+
+        students = db.query(Student).filter(Student.student_id.in_(student_ids)).all()
+        result: list[StudentSummary] = []
+        for student in students:
+            user_row = db.query(User).filter(User.id == student.user_id).one_or_none()
+            result.append(
+                StudentSummary(
+                    student_id=student.student_id,
+                    firebase_uid=user_row.firebase_uid if user_row else None,
+                    name=user_row.name if user_row else None,
+                    email=user_row.email if user_row else None,
+                    matric_no=student.matric_no,
+                    department=student.department,
+                )
+            )
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Get course students error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve students.") from e
 
 
 @app.get("/sync/pull", response_model=SyncPullResponse)

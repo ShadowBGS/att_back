@@ -20,6 +20,61 @@ class CompleteProfileRequest(BaseModel):
     name: str | None = None
 
 
+class CourseRequest(BaseModel):
+    course_code: str
+    course_name: str
+    description: str | None = None
+
+
+class CourseResponse(BaseModel):
+    course_id: int
+    course_code: str
+    course_name: str
+    description: str | None = None
+    lecturer_id: int | None = None
+
+
+class CourseListItem(BaseModel):
+    course_id: int
+    course_code: str
+    course_name: str
+    lecturer_id: int | None = None
+
+
+class CourseListResponse(BaseModel):
+    courses: list[CourseListItem]
+
+
+class SessionCreateRequest(BaseModel):
+    course_id: int
+
+
+class SessionResponse(BaseModel):
+    session_id: int
+    course_id: int
+    start_time: str
+    end_time: str
+    qr_code: str | None = None
+
+
+class StudentSummary(BaseModel):
+    student_id: int
+    firebase_uid: str | None = None
+    name: str | None = None
+    email: str | None = None
+    matric_no: str | None = None
+    department: str | None = None
+
+
+class AttendanceRow(BaseModel):
+    attendance_id: int
+    session_id: int
+    status: str | None = None
+    timestamp: str
+    verified: bool
+    student: StudentSummary
+
+
 class SyncOp(BaseModel):
     op_id: str
     entity: str
