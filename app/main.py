@@ -254,9 +254,145 @@ def profile_info(
 def sync_push(
     body: SyncPushRequest,
     ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
 ) -> SyncPushResponse:
-    # TODO: Validate ops and apply to Neon.
-    results = [SyncPushResult(op_id=op.op_id, ok=True) for op in body.ops]
+    """Process sync operations from the mobile app."""
+    from app.models import Attendance, Course, Lecturer, Session as DbSession, Student
+    
+    results = []
+    
+    for op in body.ops:
+        try:
+            entity = op.entity
+            operation = op.op
+            payload = op.payload
+            
+            # Process based on entity type
+            if entity == 'attendance' and operation == 'create':
+                # Get student by firebase_uid
+                student_firebase_uid = payload.get('student_firebase_uid')
+                if not student_firebase_uid:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Missing student_firebase_uid"))
+                    continue
+                
+                user = db.query(User).filter(User.firebase_uid == student_firebase_uid).one_or_none()
+                if not user:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Student user not found"))
+                    continue
+                
+                student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+                if not student:
+                    # Create student record if it doesn't exist (for students who haven't completed profile)
+                    student = Student(
+                        user_id=user.id,
+                        matric_no=user.external_id or f"TEMP_{user.firebase_uid[:8]}",
+                        department=user.department,
+                        level=None
+                    )
+                    db.add(student)
+                    db.flush()  # Get the student_id
+                    logger.info(f"Auto-created student record for user {user.id}")
+                
+                # Get session by server_id (which should be the session_id)
+                session_server_id = payload.get('session_id')
+                if not session_server_id:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Missing session_id"))
+                    continue
+                
+                session = db.query(DbSession).filter(DbSession.session_id == int(session_server_id)).one_or_none()
+                if not session:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Session not found"))
+                    continue
+                
+                # Check if attendance already exists
+                existing_attendance = db.query(Attendance).filter(
+                    Attendance.session_id == session.session_id,
+                    Attendance.student_id == student.student_id
+                ).one_or_none()
+                
+                if existing_attendance:
+                    # Update existing attendance
+                    existing_attendance.status = payload.get('status', 'present')
+                    existing_attendance.verified = payload.get('face_verified', False)
+                    timestamp = payload.get('timestamp')
+                    if timestamp:
+                        existing_attendance.timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    db.commit()
+                    results.append(SyncPushResult(op_id=op.op_id, ok=True))
+                    logger.info(f"Updated attendance {existing_attendance.attendance_id} for student {student.student_id}")
+                else:
+                    # Create new attendance record
+                    timestamp = payload.get('timestamp')
+                    if timestamp:
+                        timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    else:
+                        timestamp = datetime.now(timezone.utc)
+                    
+                    attendance = Attendance(
+                        session_id=session.session_id,
+                        student_id=student.student_id,
+                        status=payload.get('status', 'present'),
+                        timestamp=timestamp,
+                        verified=payload.get('face_verified', False),
+                    )
+                    db.add(attendance)
+                    db.commit()
+                    db.refresh(attendance)
+                    
+                    results.append(SyncPushResult(op_id=op.op_id, ok=True))
+                    logger.info(f"Created attendance {attendance.attendance_id} for student {student.student_id} in session {session.session_id}")
+            
+            elif entity == 'session' and operation == 'create':
+                # Get course by server_id
+                course_server_id = payload.get('course_id')
+                if not course_server_id:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Missing course_id"))
+                    continue
+                
+                course = db.query(Course).filter(Course.course_id == int(course_server_id)).one_or_none()
+                if not course:
+                    results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Course not found"))
+                    continue
+                
+                # Parse timestamps
+                start_time = payload.get('start_time')
+                end_time = payload.get('end_time')
+                if start_time:
+                    start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                else:
+                    start_time = datetime.now(timezone.utc)
+                
+                if end_time:
+                    end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                else:
+                    end_time = start_time + timedelta(hours=1)
+                
+                # Create session
+                session = DbSession(
+                    course_id=course.course_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    qr_code=payload.get('qr_code'),
+                )
+                db.add(session)
+                db.commit()
+                db.refresh(session)
+                
+                results.append(SyncPushResult(op_id=op.op_id, ok=True))
+                logger.info(f"Created session {session.session_id} for course {course.course_id}")
+            
+            else:
+                # Unsupported entity or operation, but don't fail
+                results.append(SyncPushResult(op_id=op.op_id, ok=True))
+        
+        except SQLAlchemyError as e:
+            logger.exception(f"Sync push DB error for op {op.op_id}")
+            db.rollback()
+            results.append(SyncPushResult(op_id=op.op_id, ok=False, error=str(e)))
+        except Exception as e:
+            logger.exception(f"Sync push error for op {op.op_id}")
+            results.append(SyncPushResult(op_id=op.op_id, ok=False, error=str(e)))
+    
     return SyncPushResponse(results=results, cursor=None)
 
 
