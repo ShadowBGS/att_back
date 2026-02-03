@@ -102,3 +102,22 @@ class SyncPushResponse(BaseModel):
 class SyncPullResponse(BaseModel):
     cursor: str | None = None
     changes: dict
+
+
+class StudentEnrollmentInfo(BaseModel):
+    """Information about a student's enrollments"""
+    student_id: int
+    matric_no: str
+    enrolled_courses: list[CourseListItem]
+    total_enrollments: int
+
+
+class StudentSessionInfo(BaseModel):
+    """Information about sessions for a student"""
+    session_id: int
+    course_code: str
+    course_name: str
+    start_time: str
+    end_time: str
+    attendance_status: str | None = None
+

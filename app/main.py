@@ -28,11 +28,14 @@ from .schemas import (
     SessionCreateRequest,
     SessionResponse,
     StudentSummary,
+    StudentEnrollmentInfo,
+    StudentSessionInfo,
     AttendanceRow,
     SyncPullResponse,
     SyncPushRequest,
     SyncPushResponse,
     SyncPushResult,
+)
 )
 
 settings = get_settings()
@@ -303,6 +306,22 @@ def sync_push(
                 if not session:
                     results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Session not found"))
                     continue
+                
+                # Auto-create enrollment if student is not enrolled in the course
+                from app.models import Enrollment
+                existing_enrollment = db.query(Enrollment).filter(
+                    Enrollment.student_id == student.student_id,
+                    Enrollment.course_id == session.course_id
+                ).one_or_none()
+                
+                if not existing_enrollment:
+                    enrollment = Enrollment(
+                        student_id=student.student_id,
+                        course_id=session.course_id
+                    )
+                    db.add(enrollment)
+                    db.flush()
+                    logger.info(f"Auto-enrolled student {student.student_id} in course {session.course_id}")
                 
                 # Check if attendance already exists
                 existing_attendance = db.query(Attendance).filter(
@@ -718,6 +737,121 @@ def get_course_students(
     except Exception as e:
         logger.exception("Get course students error")
         raise HTTPException(status_code=500, detail="Failed to retrieve students.") from e
+
+
+@app.get("/student/my-courses", response_model=StudentEnrollmentInfo)
+def get_student_courses(
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> StudentEnrollmentInfo:
+    """Get all courses a student is enrolled in"""
+    try:
+        from app.models import Student, Enrollment, Course
+        
+        # Get current user
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'student':
+            raise HTTPException(status_code=403, detail="Only students can access this endpoint")
+        
+        # Get student record
+        student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+        if not student:
+            raise HTTPException(status_code=404, detail="Student profile not found")
+        
+        # Get enrolled courses
+        enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
+        course_ids = [e.course_id for e in enrollments]
+        courses = db.query(Course).filter(Course.course_id.in_(course_ids)).all() if course_ids else []
+        
+        from app.schemas import CourseListItem
+        enrolled_courses = [
+            CourseListItem(
+                course_id=c.course_id,
+                course_code=c.course_code,
+                course_name=c.course_name,
+                lecturer_id=c.lecturer_id,
+            )
+            for c in courses
+        ]
+        
+        return StudentEnrollmentInfo(
+            student_id=student.student_id,
+            matric_no=student.matric_no,
+            enrolled_courses=enrolled_courses,
+            total_enrollments=len(enrolled_courses),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Get student courses error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve student courses.") from e
+
+
+@app.get("/student/my-sessions", response_model=list[StudentSessionInfo])
+def get_student_sessions(
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> list[StudentSessionInfo]:
+    """Get all sessions for courses a student is enrolled in"""
+    try:
+        from app.models import Student, Enrollment, Course, Session as DbSession, Attendance
+        
+        # Get current user
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'student':
+            raise HTTPException(status_code=403, detail="Only students can access this endpoint")
+        
+        # Get student record
+        student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+        if not student:
+            raise HTTPException(status_code=404, detail="Student profile not found")
+        
+        # Get enrolled course IDs
+        enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
+        course_ids = [e.course_id for e in enrollments]
+        
+        if not course_ids:
+            return []
+        
+        # Get all sessions for enrolled courses
+        sessions = db.query(DbSession).filter(DbSession.course_id.in_(course_ids)).order_by(DbSession.start_time.desc()).all()
+        
+        result: list[StudentSessionInfo] = []
+        for session in sessions:
+            # Get course info
+            course = db.query(Course).filter(Course.course_id == session.course_id).one_or_none()
+            if not course:
+                continue
+            
+            # Check attendance status
+            attendance = db.query(Attendance).filter(
+                Attendance.session_id == session.session_id,
+                Attendance.student_id == student.student_id
+            ).one_or_none()
+            
+            result.append(
+                StudentSessionInfo(
+                    session_id=session.session_id,
+                    course_code=course.course_code,
+                    course_name=course.course_name,
+                    start_time=session.start_time.isoformat(),
+                    end_time=session.end_time.isoformat(),
+                    attendance_status=attendance.status if attendance else None,
+                )
+            )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Get student sessions error")
+        raise HTTPException(status_code=500, detail="Failed to retrieve student sessions.") from e
 
 
 @app.get("/sync/pull", response_model=SyncPullResponse)

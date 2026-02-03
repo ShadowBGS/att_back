@@ -49,6 +49,11 @@ class Student(Base):
     matric_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     department: Mapped[str | None] = mapped_column(String(100), nullable=True)
     level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", backref="student_profile")
+    enrollments: Mapped[list["Enrollment"]] = relationship("Enrollment", back_populates="student", cascade="all, delete-orphan")
+    attendance_records: Mapped[list["Attendance"]] = relationship("Attendance", back_populates="student", cascade="all, delete-orphan")
 
 
 class Lecturer(Base):
@@ -59,6 +64,10 @@ class Lecturer(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True
     )
     department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    
+    # Relationships
+    user: Mapped["User"] = relationship("User", backref="lecturer_profile")
+    courses: Mapped[list["Course"]] = relationship("Course", back_populates="lecturer")
 
 
 class FaceData(Base):
@@ -80,6 +89,11 @@ class Course(Base):
     lecturer_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("lecturer.lecturer_id", ondelete="SET NULL"), nullable=True
     )
+    
+    # Relationships
+    lecturer: Mapped["Lecturer"] = relationship("Lecturer", back_populates="courses")
+    enrollments: Mapped[list["Enrollment"]] = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
+    sessions: Mapped[list["Session"]] = relationship("Session", back_populates="course", cascade="all, delete-orphan")
 
 
 class Session(Base):
@@ -92,6 +106,35 @@ class Session(Base):
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     qr_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # Relationships
+    course: Mapped["Course"] = relationship("Course", back_populates="sessions")
+    attendance_records: Mapped[list["Attendance"]] = relationship("Attendance", back_populates="session", cascade="all, delete-orphan")
+
+
+class Enrollment(Base):
+    """Track which students are enrolled in which courses"""
+    __tablename__ = "enrollment"
+
+    enrollment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("student.student_id", ondelete="CASCADE"), nullable=False
+    )
+    course_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("course.course_id", ondelete="CASCADE"), nullable=False
+    )
+    enrolled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    
+    # Relationships
+    student: Mapped["Student"] = relationship("Student", back_populates="enrollments")
+    course: Mapped["Course"] = relationship("Course", back_populates="enrollments")
+    
+    __table_args__ = (
+        # Ensure a student can only be enrolled once per course
+        CheckConstraint("student_id IS NOT NULL AND course_id IS NOT NULL"),
+    )
 
 
 class Attendance(Base):
@@ -109,3 +152,7 @@ class Attendance(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    
+    # Relationships
+    session: Mapped["Session"] = relationship("Session", back_populates="attendance_records")
+    student: Mapped["Student"] = relationship("Student", back_populates="attendance_records")
