@@ -36,7 +36,6 @@ from .schemas import (
     SyncPushResponse,
     SyncPushResult,
 )
-)
 
 settings = get_settings()
 
