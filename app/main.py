@@ -21,6 +21,8 @@ from .schemas import (
     BootstrapRequest,
     BootstrapResponse,
     CompleteProfileRequest,
+    ProfileUpdateRequest,
+    ProfileUpdateResponse,
     CourseRequest,
     CourseResponse,
     CourseListItem,
@@ -154,6 +156,13 @@ def complete_profile(
             # Check if student record already exists
             existing_student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
             if not existing_student:
+                # Check if matric_no is already taken by another user
+                matric_conflict = db.query(Student).filter(Student.matric_no == user.external_id).one_or_none()
+                if matric_conflict:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Matric number {user.external_id} is already registered to another account."
+                    )
                 student = Student(
                     user_id=user.id,
                     matric_no=user.external_id,
@@ -164,6 +173,17 @@ def complete_profile(
                 logger.info(f"Created student record for user {user.id} with matric_no {user.external_id}")
             else:
                 # Update existing student record
+                # Check if new matric_no conflicts with another student
+                if existing_student.matric_no != user.external_id:
+                    matric_conflict = db.query(Student).filter(
+                        Student.matric_no == user.external_id,
+                        Student.user_id != user.id
+                    ).one_or_none()
+                    if matric_conflict:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Matric number {user.external_id} is already registered to another account."
+                        )
                 existing_student.matric_no = user.external_id
                 existing_student.department = user.department
                 logger.info(f"Updated student record for user {user.id}")
@@ -250,6 +270,83 @@ def profile_info(
     except Exception as e:
         logger.exception("Profile info error")
         raise HTTPException(status_code=500, detail="Failed to retrieve profile info.") from e
+
+
+@app.patch("/profile/update", response_model=ProfileUpdateResponse)
+def profile_update(
+    body: ProfileUpdateRequest,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.models import Student, Lecturer
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if body.name is not None:
+            name_val = body.name.strip()
+            if name_val:
+                user.name = name_val
+
+        if body.external_id is not None:
+            external_val = body.external_id.strip()
+            if external_val:
+                user.external_id = external_val
+
+        if body.department is not None:
+            department_val = body.department.strip()
+            if department_val:
+                user.department = department_val
+
+        if user.role == "student" and user.external_id:
+            student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+            if not student:
+                student = Student(
+                    user_id=user.id,
+                    matric_no=user.external_id,
+                    department=user.department,
+                    level=None,
+                )
+                db.add(student)
+            else:
+                student.matric_no = user.external_id
+                student.department = user.department
+
+        if user.role == "lecturer":
+            lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+            if not lecturer:
+                lecturer = Lecturer(user_id=user.id, department=user.department)
+                db.add(lecturer)
+            else:
+                lecturer.department = user.department
+
+        if user.external_id and user.department:
+            user.profile_completed = True
+
+        db.commit()
+        db.refresh(user)
+
+        return ProfileUpdateResponse(
+            firebase_uid=user.firebase_uid,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            external_id=user.external_id,
+            department=user.department,
+            profile_completed=user.profile_completed,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Profile update DB error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Profile update failed (database error).") from e
+    except Exception as e:
+        logger.exception("Profile update error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Profile update failed (server error).") from e
 
 
 @app.post("/sync/push", response_model=SyncPushResponse)
@@ -472,6 +569,121 @@ def create_course(
         logger.exception("Create course unexpected error")
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create course.") from e
+
+
+@app.patch("/courses/{course_id}", response_model=CourseResponse)
+def update_course(
+    course_id: int,
+    body: CourseRequest,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> CourseResponse:
+    """Update a course (lecturer only, must be the course owner)"""
+    try:
+        from app.models import Course, Lecturer
+        
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can update courses")
+        
+        # Get the course
+        course = db.query(Course).filter(Course.course_id == course_id).one_or_none()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Check if user is the lecturer who owns this course
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=403, detail="You can only update your own courses")
+        
+        # Check if new course code already exists (and is different from current)
+        if body.course_code.strip().upper() != course.course_code:
+            existing = db.query(Course).filter(Course.course_code == body.course_code.strip().upper()).one_or_none()
+            if existing:
+                raise HTTPException(status_code=409, detail="Course code already exists")
+        
+        # Update course
+        course.course_code = body.course_code.strip().upper()
+        course.course_name = body.course_name.strip()
+        if body.description:
+            course.description = body.description.strip()
+        
+        db.commit()
+        db.refresh(course)
+        
+        logger.info(f"Updated course {course.course_id}: {course.course_code}")
+        
+        return CourseResponse(
+            course_id=course.course_id,
+            course_code=course.course_code,
+            course_name=course.course_name,
+            lecturer_id=course.lecturer_id,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Update course DB error")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update course (database error).",
+        ) from e
+    except Exception as e:
+        logger.exception("Update course unexpected error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update course.") from e
+
+
+@app.delete("/courses/{course_id}")
+def delete_course(
+    course_id: int,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Delete a course (lecturer only, must be the course owner)"""
+    try:
+        from app.models import Course, Lecturer
+        
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can delete courses")
+        
+        # Get the course
+        course = db.query(Course).filter(Course.course_id == course_id).one_or_none()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Check if user is the lecturer who owns this course
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=403, detail="You can only delete your own courses")
+        
+        # Delete course
+        db.delete(course)
+        db.commit()
+        
+        logger.info(f"Deleted course {course_id}: {course.course_code}")
+        
+        return {"message": "Course deleted successfully"}
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.exception("Delete course DB error")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete course (database error).",
+        ) from e
+    except Exception as e:
+        logger.exception("Delete course unexpected error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete course.") from e
 
 
 @app.get("/courses/my-courses")

@@ -20,6 +20,22 @@ class CompleteProfileRequest(BaseModel):
     name: str | None = None
 
 
+class ProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    external_id: str | None = None
+    department: str | None = None
+
+
+class ProfileUpdateResponse(BaseModel):
+    firebase_uid: str
+    email: str | None = None
+    name: str | None = None
+    role: str
+    external_id: str | None = None
+    department: str | None = None
+    profile_completed: bool
+
+
 class CourseRequest(BaseModel):
     course_code: str
     course_name: str
