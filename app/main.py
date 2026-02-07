@@ -379,7 +379,8 @@ def sync_push(
                     results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Student user not found"))
                     continue
                 
-                student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+                # Use .first() to handle duplicate student records gracefully
+                student = db.query(Student).filter(Student.user_id == user.id).first()
                 if not student:
                     # Create student record if it doesn't exist (for students who haven't completed profile)
                     student = Student(
@@ -405,10 +406,11 @@ def sync_push(
                 
                 # Auto-create enrollment if student is not enrolled in the course
                 from app.models import Enrollment
+                # Use .first() to handle potential duplicate enrollments gracefully
                 existing_enrollment = db.query(Enrollment).filter(
                     Enrollment.student_id == student.student_id,
                     Enrollment.course_id == session.course_id
-                ).one_or_none()
+                ).first()
                 
                 if not existing_enrollment:
                     enrollment = Enrollment(
@@ -419,11 +421,11 @@ def sync_push(
                     db.flush()
                     logger.info(f"Auto-enrolled student {student.student_id} in course {session.course_id}")
                 
-                # Check if attendance already exists
+                # Check if attendance already exists - use .first() to handle duplicates gracefully
                 existing_attendance = db.query(Attendance).filter(
                     Attendance.session_id == session.session_id,
                     Attendance.student_id == student.student_id
-                ).one_or_none()
+                ).first()
                 
                 if existing_attendance:
                     # Update existing attendance
@@ -464,7 +466,8 @@ def sync_push(
                     results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Missing course_id"))
                     continue
                 
-                course = db.query(Course).filter(Course.course_id == int(course_server_id)).one_or_none()
+                # Use .first() to handle duplicate course records gracefully
+                course = db.query(Course).filter(Course.course_id == int(course_server_id)).first()
                 if not course:
                     results.append(SyncPushResult(op_id=op.op_id, ok=False, error="Course not found"))
                     continue
