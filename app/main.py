@@ -1048,8 +1048,8 @@ def get_student_sessions(
         
         result: list[StudentSessionInfo] = []
         for session in sessions:
-            # Get course info
-            course = db.query(Course).filter(Course.course_id == session.course_id).one_or_none()
+            # Get course info - use .first() to handle duplicate course records gracefully
+            course = db.query(Course).filter(Course.course_id == session.course_id).first()
             if not course:
                 logger.warning(f"[/student/my-sessions] Course not found for session: {session.session_id}")
                 continue
