@@ -967,8 +967,8 @@ def get_student_courses(
         if user.role != 'student':
             raise HTTPException(status_code=403, detail="Only students can access this endpoint")
         
-        # Get student record
-        student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+        # Get student record - use .first() to handle duplicate student records gracefully
+        student = db.query(Student).filter(Student.user_id == user.id).first()
         if not student:
             raise HTTPException(status_code=404, detail="Student profile not found")
         
@@ -1010,34 +1010,48 @@ def get_student_sessions(
     try:
         from app.models import Student, Enrollment, Course, Session as DbSession, Attendance
         
+        logger.info(f"[/student/my-sessions] Starting for user: {ctx.firebase_uid}")
+        
         # Get current user
         user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
         if not user:
+            logger.warning(f"[/student/my-sessions] User not found: {ctx.firebase_uid}")
             raise HTTPException(status_code=404, detail="User not found")
         
+        logger.info(f"[/student/my-sessions] Found user: {user.id}, role: {user.role}")
+        
         if user.role != 'student':
+            logger.warning(f"[/student/my-sessions] User is not a student: {user.role}")
             raise HTTPException(status_code=403, detail="Only students can access this endpoint")
         
-        # Get student record
-        student = db.query(Student).filter(Student.user_id == user.id).one_or_none()
+        # Get student record - use .first() to handle duplicate student records gracefully
+        student = db.query(Student).filter(Student.user_id == user.id).first()
         if not student:
+            logger.warning(f"[/student/my-sessions] No student record found for user: {user.id}")
             raise HTTPException(status_code=404, detail="Student profile not found")
+        
+        logger.info(f"[/student/my-sessions] Found student: {student.student_id}")
         
         # Get enrolled course IDs
         enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
         course_ids = [e.course_id for e in enrollments]
         
+        logger.info(f"[/student/my-sessions] Found {len(course_ids)} enrolled courses: {course_ids}")
+        
         if not course_ids:
+            logger.info("[/student/my-sessions] No enrollments, returning empty list")
             return []
         
         # Get all sessions for enrolled courses
         sessions = db.query(DbSession).filter(DbSession.course_id.in_(course_ids)).order_by(DbSession.start_time.desc()).all()
+        logger.info(f"[/student/my-sessions] Found {len(sessions)} total sessions for enrolled courses")
         
         result: list[StudentSessionInfo] = []
         for session in sessions:
             # Get course info
             course = db.query(Course).filter(Course.course_id == session.course_id).one_or_none()
             if not course:
+                logger.warning(f"[/student/my-sessions] Course not found for session: {session.session_id}")
                 continue
             
             # Check attendance status
@@ -1045,6 +1059,8 @@ def get_student_sessions(
                 Attendance.session_id == session.session_id,
                 Attendance.student_id == student.student_id
             ).one_or_none()
+            
+            logger.info(f"[/student/my-sessions] Session {session.session_id}: course={course.course_code}, attendance={attendance.status if attendance else 'None'}")
             
             result.append(
                 StudentSessionInfo(
@@ -1057,12 +1073,13 @@ def get_student_sessions(
                 )
             )
         
+        logger.info(f"[/student/my-sessions] Returning {len(result)} sessions")
         return result
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Get student sessions error")
-        raise HTTPException(status_code=500, detail="Failed to retrieve student sessions.") from e
+        logger.exception(f"[/student/my-sessions] Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve student sessions: {str(e)}") from e
 
 
 @app.get("/sync/pull", response_model=SyncPullResponse)
