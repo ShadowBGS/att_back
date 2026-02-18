@@ -523,7 +523,7 @@ def sync_face_data(
 ):
     """Receive and store face embedding from student device."""
     try:
-        user_id = ctx.user_uuid
+        user_id = ctx.firebase_uid
         face_template = body.face_template
         
         if not face_template:
@@ -996,7 +996,7 @@ def get_student_courses(
 ) -> StudentEnrollmentInfo:
     """Get all courses a student is enrolled in"""
     try:
-        from app.models import Student, Enrollment, Course
+        from app.models import Attendance, Course, Enrollment, Session as DbSession, Student
         
         # Get current user
         user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
@@ -1009,11 +1009,32 @@ def get_student_courses(
         # Get student record - use .first() to handle duplicate student records gracefully
         student = db.query(Student).filter(Student.user_id == user.id).first()
         if not student:
-            raise HTTPException(status_code=404, detail="Student profile not found")
+            if not user.external_id:
+                raise HTTPException(status_code=400, detail="Student profile not completed")
+            student = Student(
+                user_id=user.id,
+                matric_no=user.external_id,
+                department=user.department,
+                level=None,
+            )
+            db.add(student)
+            db.flush()
         
         # Get enrolled courses
         enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
         course_ids = [e.course_id for e in enrollments]
+
+        # Fallback: derive courses from attendance if enrollments are empty
+        if not course_ids:
+            attendance_course_rows = (
+                db.query(DbSession.course_id)
+                .join(Attendance, Attendance.session_id == DbSession.session_id)
+                .filter(Attendance.student_id == student.student_id)
+                .distinct()
+                .all()
+            )
+            course_ids = [row[0] for row in attendance_course_rows]
+
         courses = db.query(Course).filter(Course.course_id.in_(course_ids)).all() if course_ids else []
         
         from app.schemas import CourseListItem
@@ -1047,7 +1068,7 @@ def get_student_sessions(
 ) -> list[StudentSessionInfo]:
     """Get all sessions for courses a student is enrolled in"""
     try:
-        from app.models import Student, Enrollment, Course, Session as DbSession, Attendance
+        from app.models import Attendance, Course, Enrollment, Session as DbSession, Student
         
         logger.info(f"[/student/my-sessions] Starting for user: {ctx.firebase_uid}")
         
@@ -1067,13 +1088,33 @@ def get_student_sessions(
         student = db.query(Student).filter(Student.user_id == user.id).first()
         if not student:
             logger.warning(f"[/student/my-sessions] No student record found for user: {user.id}")
-            raise HTTPException(status_code=404, detail="Student profile not found")
+            if not user.external_id:
+                raise HTTPException(status_code=400, detail="Student profile not completed")
+            student = Student(
+                user_id=user.id,
+                matric_no=user.external_id,
+                department=user.department,
+                level=None,
+            )
+            db.add(student)
+            db.flush()
         
         logger.info(f"[/student/my-sessions] Found student: {student.student_id}")
         
         # Get enrolled course IDs
         enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
         course_ids = [e.course_id for e in enrollments]
+
+        # Fallback: derive courses from attendance if enrollments are empty
+        if not course_ids:
+            attendance_course_rows = (
+                db.query(DbSession.course_id)
+                .join(Attendance, Attendance.session_id == DbSession.session_id)
+                .filter(Attendance.student_id == student.student_id)
+                .distinct()
+                .all()
+            )
+            course_ids = [row[0] for row in attendance_course_rows]
         
         logger.info(f"[/student/my-sessions] Found {len(course_ids)} enrolled courses: {course_ids}")
         
