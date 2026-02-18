@@ -999,19 +999,25 @@ def get_student_courses(
     """Get all courses a student is enrolled in"""
     try:
         from app.models import Attendance, Course, Enrollment, Session as DbSession, Student
+        logger.info(f"[/student/my-courses] Starting for user: {ctx.firebase_uid}")
         
         # Get current user
         user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
         if not user:
+            logger.warning(f"[/student/my-courses] User not found: {ctx.firebase_uid}")
             raise HTTPException(status_code=404, detail="User not found")
         
+        logger.info(f"[/student/my-courses] Found user: {user.id}, role: {user.role}")
         if user.role != 'student':
+            logger.warning(f"[/student/my-courses] User is not a student: {user.role}")
             raise HTTPException(status_code=403, detail="Only students can access this endpoint")
         
         # Get student record - use .first() to handle duplicate student records gracefully
         student = db.query(Student).filter(Student.user_id == user.id).first()
         if not student:
+            logger.warning(f"[/student/my-courses] No student record found for user: {user.id}")
             if not user.external_id:
+                logger.warning("[/student/my-courses] Student profile not completed")
                 raise HTTPException(status_code=400, detail="Student profile not completed")
             student = Student(
                 user_id=user.id,
@@ -1021,13 +1027,18 @@ def get_student_courses(
             )
             db.add(student)
             db.flush()
+            logger.info(f"[/student/my-courses] Auto-created student: {student.student_id}")
+        else:
+            logger.info(f"[/student/my-courses] Found student: {student.student_id}")
         
         # Get enrolled courses
         enrollments = db.query(Enrollment).filter(Enrollment.student_id == student.student_id).all()
         course_ids = [e.course_id for e in enrollments]
+        logger.info(f"[/student/my-courses] Enrollments: {len(course_ids)} -> {course_ids}")
 
         # Fallback: derive courses from attendance if enrollments are empty
         if not course_ids:
+            logger.info("[/student/my-courses] No enrollments, deriving courses from attendance")
             attendance_course_rows = (
                 db.query(DbSession.course_id)
                 .join(Attendance, Attendance.session_id == DbSession.session_id)
@@ -1036,8 +1047,10 @@ def get_student_courses(
                 .all()
             )
             course_ids = [row[0] for row in attendance_course_rows]
+            logger.info(f"[/student/my-courses] Derived courses: {course_ids}")
 
         courses = db.query(Course).filter(Course.course_id.in_(course_ids)).all() if course_ids else []
+        logger.info(f"[/student/my-courses] Returning courses: {len(courses)}")
         
         from app.schemas import CourseListItem
         enrolled_courses = [
