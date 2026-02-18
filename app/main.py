@@ -10,6 +10,7 @@ import logging
 import os
 import tempfile
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -531,13 +532,14 @@ def sync_face_data(
         
         # Delete existing face data for this user
         db.execute(
-            f"DELETE FROM face_data WHERE user_id = '{user_id}'"
+            text("DELETE FROM face_data WHERE user_id = :user_id"),
+            {"user_id": user_id},
         )
-        
+
         # Insert new face embedding
         db.execute(
-            f"""INSERT INTO face_data (user_id, face_template) 
-               VALUES ('{user_id}', '{face_template}')"""
+            text("INSERT INTO face_data (user_id, face_template) VALUES (:user_id, :face_template)"),
+            {"user_id": user_id, "face_template": face_template},
         )
         db.commit()
         
