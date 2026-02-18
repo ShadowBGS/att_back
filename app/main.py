@@ -37,6 +37,7 @@ from .schemas import (
     SyncPushRequest,
     SyncPushResponse,
     SyncPushResult,
+    FaceDataSync,
 )
 
 settings = get_settings()
@@ -512,6 +513,41 @@ def sync_push(
             results.append(SyncPushResult(op_id=op.op_id, ok=False, error=str(e)))
     
     return SyncPushResponse(results=results, cursor=None)
+
+
+@app.post("/sync/face-data")
+def sync_face_data(
+    body: FaceDataSync,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Receive and store face embedding from student device."""
+    try:
+        user_id = ctx.user_uuid
+        face_template = body.face_template
+        
+        if not face_template:
+            raise HTTPException(status_code=400, detail="face_template required")
+        
+        # Delete existing face data for this user
+        db.execute(
+            f"DELETE FROM face_data WHERE user_id = '{user_id}'"
+        )
+        
+        # Insert new face embedding
+        db.execute(
+            f"""INSERT INTO face_data (user_id, face_template) 
+               VALUES ('{user_id}', '{face_template}')"""
+        )
+        db.commit()
+        
+        logger.info(f"Face data synced for user {user_id}")
+        return {"status": "success", "message": "Face embedding stored"}
+        
+    except Exception as e:
+        logger.error(f"Error syncing face data: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/courses/create", response_model=CourseResponse)

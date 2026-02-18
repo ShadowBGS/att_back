@@ -120,6 +120,12 @@ class SyncPullResponse(BaseModel):
     changes: dict
 
 
+class FaceDataSync(BaseModel):
+    """Face embedding data for sync"""
+    user_id: str  # Firebase UUID
+    face_template: str  # JSON-encoded embedding array
+
+
 class StudentEnrollmentInfo(BaseModel):
     """Information about a student's enrollments"""
     student_id: int
