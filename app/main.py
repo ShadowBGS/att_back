@@ -524,28 +524,41 @@ def sync_face_data(
 ):
     """Receive and store face embedding from student device."""
     try:
-        user_id = ctx.firebase_uid
+        firebase_uid = ctx.firebase_uid
         face_template = body.face_template
         
         if not face_template:
             raise HTTPException(status_code=400, detail="face_template required")
         
+        # Look up user's database UUID by firebase_uid
+        result = db.execute(
+            text("SELECT id FROM users WHERE firebase_uid = :firebase_uid"),
+            {"firebase_uid": firebase_uid},
+        ).fetchone()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        db_user_id = result[0]
+        
         # Delete existing face data for this user
         db.execute(
             text("DELETE FROM face_data WHERE user_id = :user_id"),
-            {"user_id": user_id},
+            {"user_id": db_user_id},
         )
 
         # Insert new face embedding
         db.execute(
             text("INSERT INTO face_data (user_id, face_template) VALUES (:user_id, :face_template)"),
-            {"user_id": user_id, "face_template": face_template},
+            {"user_id": db_user_id, "face_template": face_template},
         )
         db.commit()
         
-        logger.info(f"Face data synced for user {user_id}")
+        logger.info(f"Face data synced for user {firebase_uid} (db_id: {db_user_id})")
         return {"status": "success", "message": "Face embedding stored"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error syncing face data: {str(e)}")
         db.rollback()
