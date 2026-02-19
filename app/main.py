@@ -1194,6 +1194,34 @@ def get_student_sessions(
 def sync_pull(
     cursor: str | None = None,
     ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
 ) -> SyncPullResponse:
-    # TODO: Return deltas from Neon scoped by ctx role.
-    return SyncPullResponse(cursor=cursor, changes={})
+    """Pull data from server for offline sync"""
+    changes = {}
+    
+    # Pull face data for authenticated user
+    try:
+        # Get user's database UUID from firebase_uid
+        user_result = db.execute(
+            text("SELECT id FROM users WHERE firebase_uid = :firebase_uid"),
+            {"firebase_uid": ctx.firebase_uid}
+        ).fetchone()
+        
+        if user_result:
+            user_id = user_result[0]
+            
+            # Query face_data for this user
+            face_result = db.execute(
+                text("SELECT face_template FROM face_data WHERE user_id = :user_id"),
+                {"user_id": user_id}
+            ).fetchone()
+            
+            if face_result:
+                changes["face_data"] = {
+                    "user_id": ctx.firebase_uid,
+                    "face_template": face_result[0]
+                }
+    except Exception as e:
+        print(f"Error pulling face data: {e}")
+    
+    return SyncPullResponse(cursor=cursor, changes=changes)
