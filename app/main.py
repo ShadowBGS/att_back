@@ -450,6 +450,7 @@ def sync_push(
                     attendance = Attendance(
                         session_id=session.session_id,
                         student_id=student.student_id,
+                        course_id=session.course_id,
                         status=payload.get('status', 'present'),
                         timestamp=timestamp,
                         verified=payload.get('face_verified', False),

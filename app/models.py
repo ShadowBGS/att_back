@@ -147,6 +147,9 @@ class Attendance(Base):
     student_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("student.student_id", ondelete="CASCADE"), nullable=False
     )
+    course_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("course.course_id", ondelete="CASCADE"), nullable=False
+    )
     status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
