@@ -1151,25 +1151,38 @@ def get_student_sessions(
             logger.info("[/student/my-sessions] No enrollments, returning empty list")
             return []
         
+        # Optimized: Fetch all data in bulk to avoid N+1 queries
+        
         # Get all sessions for enrolled courses
         sessions = db.query(DbSession).filter(DbSession.course_id.in_(course_ids)).order_by(DbSession.start_time.desc()).all()
         logger.info(f"[/student/my-sessions] Found {len(sessions)} total sessions for enrolled courses")
         
+        if not sessions:
+            return []
+        
+        # Fetch all courses in one query
+        courses_list = db.query(Course).filter(Course.course_id.in_(course_ids)).all()
+        courses_map = {c.course_id: c for c in courses_list}
+        
+        # Fetch all attendance records for this student in one query
+        session_ids = [s.session_id for s in sessions]
+        attendance_records = db.query(Attendance).filter(
+            Attendance.session_id.in_(session_ids),
+            Attendance.student_id == student.student_id
+        ).all()
+        attendance_map = {a.session_id: a for a in attendance_records}
+        
+        logger.info(f"[/student/my-sessions] Loaded {len(courses_map)} courses and {len(attendance_records)} attendance records")
+        
+        # Build response using in-memory lookups
         result: list[StudentSessionInfo] = []
         for session in sessions:
-            # Get course info - use .first() to handle duplicate course records gracefully
-            course = db.query(Course).filter(Course.course_id == session.course_id).first()
+            course = courses_map.get(session.course_id)
             if not course:
                 logger.warning(f"[/student/my-sessions] Course not found for session: {session.session_id}")
                 continue
             
-            # Check attendance status
-            attendance = db.query(Attendance).filter(
-                Attendance.session_id == session.session_id,
-                Attendance.student_id == student.student_id
-            ).one_or_none()
-            
-            logger.info(f"[/student/my-sessions] Session {session.session_id}: course={course.course_code}, attendance={attendance.status if attendance else 'None'}")
+            attendance = attendance_map.get(session.session_id)
             
             result.append(
                 StudentSessionInfo(
