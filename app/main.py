@@ -1198,6 +1198,8 @@ def sync_pull(
     db: Session = Depends(get_db),
 ) -> SyncPullResponse:
     """Pull data from server for offline sync"""
+    from app.models import Attendance, Course, Session as DbSession, Student
+    
     changes = {}
     
     # Pull face data for authenticated user
@@ -1223,6 +1225,53 @@ def sync_pull(
                     "face_template": face_result[0]
                 }
     except Exception as e:
-        print(f"Error pulling face data: {e}")
+        logger.error(f"Error pulling face data: {e}")
+    
+    # Pull attendance records for student users
+    try:
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if user and user.role == 'student':
+            student = db.query(Student).filter(Student.user_id == user.id).first()
+            if student:
+                # Get all attendance records for this student
+                attendance_records = db.query(Attendance).filter(
+                    Attendance.student_id == student.student_id
+                ).all()
+                
+                attendance_list = []
+                for att in attendance_records:
+                    # Get session info
+                    session = db.query(DbSession).filter(
+                        DbSession.session_id == att.session_id
+                    ).first()
+                    if not session:
+                        continue
+                    
+                    # Get course info
+                    course = db.query(Course).filter(
+                        Course.course_id == session.course_id
+                    ).first()
+                    if not course:
+                        continue
+                    
+                    attendance_list.append({
+                        "attendance_id": str(att.attendance_id),
+                        "session_id": str(session.session_id),
+                        "course_code": course.course_code,
+                        "status": att.status,
+                        "timestamp": att.timestamp.isoformat(),
+                        "verified": att.verified,
+                        "student": {
+                            "firebase_uid": ctx.firebase_uid,
+                            "name": user.name,
+                            "email": user.email,
+                        }
+                    })
+                
+                if attendance_list:
+                    changes["attendance"] = attendance_list
+                    logger.info(f"[/sync/pull] Returning {len(attendance_list)} attendance records for student {student.student_id}")
+    except Exception as e:
+        logger.error(f"Error pulling attendance data: {e}")
     
     return SyncPullResponse(cursor=cursor, changes=changes)
