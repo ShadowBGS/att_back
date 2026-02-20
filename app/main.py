@@ -1051,11 +1051,11 @@ def get_student_courses(
         logger.info(f"[/student/my-courses] Enrollments: {len(course_ids)} -> {course_ids}")
 
         # Fallback: derive courses from attendance if enrollments are empty
+        # Optimized to use Attendance.course_id directly instead of joining through sessions
         if not course_ids:
             logger.info("[/student/my-courses] No enrollments, deriving courses from attendance")
             attendance_course_rows = (
-                db.query(DbSession.course_id)
-                .join(Attendance, Attendance.session_id == DbSession.session_id)
+                db.query(Attendance.course_id)
                 .filter(Attendance.student_id == student.student_id)
                 .distinct()
                 .all()
@@ -1135,10 +1135,10 @@ def get_student_sessions(
         course_ids = [e.course_id for e in enrollments]
 
         # Fallback: derive courses from attendance if enrollments are empty
+        # Optimized to use Attendance.course_id directly instead of joining through sessions
         if not course_ids:
             attendance_course_rows = (
-                db.query(DbSession.course_id)
-                .join(Attendance, Attendance.session_id == DbSession.session_id)
+                db.query(Attendance.course_id)
                 .filter(Attendance.student_id == student.student_id)
                 .distinct()
                 .all()
