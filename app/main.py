@@ -55,14 +55,24 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Attendance Backend", version="0.1.0")
 
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=settings.cors_origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "https://omams-portal.onrender.com",
+        # "https://portal.yourdomain.com",  # If using custom domain
+        "http://localhost:8080",  # For local testing
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.get("/health")
 def health() -> dict:
@@ -1005,70 +1015,6 @@ def get_course_students(
         raise HTTPException(status_code=500, detail="Failed to retrieve students.") from e
 
 
-@app.get("/courses/{course_id}/attendance", response_model=list[AttendanceRow])
-def get_course_attendance(
-    course_id: int,
-    ctx: AuthContext = Depends(require_auth),
-    db: Session = Depends(get_db),
-) -> list[AttendanceRow]:
-    """Get ALL attendance records for every session in a course (lecturer only).
-
-    Returns records for all sessions in one call, avoiding N+1 per-session requests.
-    """
-    try:
-        from app.models import Attendance, Course, Lecturer, Session as DbSession, Student
-
-        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        if user.role != 'lecturer':
-            raise HTTPException(status_code=403, detail="Only lecturers can view attendance")
-
-        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
-        if not lecturer:
-            raise HTTPException(status_code=404, detail="Lecturer profile not found")
-
-        course = db.query(Course).filter(Course.course_id == course_id).one_or_none()
-        if not course or course.lecturer_id != lecturer.lecturer_id:
-            raise HTTPException(status_code=404, detail="Course not found")
-
-        # Fetch all attendance for all sessions of this course in one query
-        records = (
-            db.query(Attendance)
-            .join(DbSession, DbSession.session_id == Attendance.session_id)
-            .filter(DbSession.course_id == course_id)
-            .all()
-        )
-
-        rows: list[AttendanceRow] = []
-        for rec in records:
-            student = db.query(Student).filter(Student.student_id == rec.student_id).one_or_none()
-            user_row = db.query(User).filter(User.id == student.user_id).one_or_none() if student else None
-            rows.append(
-                AttendanceRow(
-                    attendance_id=rec.attendance_id,
-                    session_id=rec.session_id,
-                    status=rec.status,
-                    timestamp=rec.timestamp.isoformat(),
-                    verified=rec.verified,
-                    student=StudentSummary(
-                        student_id=rec.student_id,
-                        firebase_uid=user_row.firebase_uid if user_row else None,
-                        name=user_row.name if user_row else None,
-                        email=user_row.email if user_row else None,
-                        matric_no=student.matric_no if student else None,
-                        department=student.department if student else None,
-                    ),
-                )
-            )
-        return rows
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Get course attendance error")
-        raise HTTPException(status_code=500, detail="Failed to retrieve attendance.") from e
-
-
 @app.get("/student/my-courses", response_model=StudentEnrollmentInfo)
 def get_student_courses(
     ctx: AuthContext = Depends(require_auth),
@@ -1276,8 +1222,9 @@ def sync_pull(
 ) -> SyncPullResponse:
     """Pull data from server for offline sync"""
     from app.models import Attendance, Course, Session as DbSession, Student
+    from typing import Any
     
-    changes = {}
+    changes: dict[str, Any] = {}
     
     # Pull face data for authenticated user
     try:

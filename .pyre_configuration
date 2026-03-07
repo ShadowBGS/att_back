@@ -1,0 +1,14 @@
+{
+  "site_package_search_strategy": "all",
+  "source_directories": [
+    {
+      "import_root": ".",
+      "source": "."
+    }
+  ],
+  "search_path": [
+    "../.venv/Lib/site-packages"
+  ],
+  "python_version": "3.13",
+  "ignore_all_errors": true
+}
