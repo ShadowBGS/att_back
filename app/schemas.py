@@ -1,6 +1,25 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Generic, TypeVar
+from pydantic import BaseModel, Field
+
+T = TypeVar('T')
+
+
+class PaginationMetadata(BaseModel):
+    """Pagination metadata for API responses"""
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Generic paginated response wrapper"""
+    items: list[T]
+    pagination: PaginationMetadata
 
 
 class BootstrapRequest(BaseModel):
@@ -142,4 +161,29 @@ class StudentSessionInfo(BaseModel):
     start_time: str
     end_time: str
     attendance_status: str | None = None
+
+
+# Paginated response types
+class PaginatedSessionsResponse(BaseModel):
+    """Paginated list of sessions"""
+    items: list[SessionResponse]
+    pagination: PaginationMetadata
+
+
+class PaginatedAttendanceResponse(BaseModel):
+    """Paginated attendance records"""
+    items: list[AttendanceRow]
+    pagination: PaginationMetadata
+
+
+class PaginatedStudentsResponse(BaseModel):
+    """Paginated list of students"""
+    items: list[StudentSummary]
+    pagination: PaginationMetadata
+
+
+class PaginatedStudentSessionsResponse(BaseModel):
+    """Paginated list of student sessions"""
+    items: list[StudentSessionInfo]
+    pagination: PaginationMetadata
 

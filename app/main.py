@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import json
@@ -39,6 +39,11 @@ from .schemas import (
     SyncPushResponse,
     SyncPushResult,
     FaceDataSync,
+    PaginationMetadata,
+    PaginatedSessionsResponse,
+    PaginatedAttendanceResponse,
+    PaginatedStudentsResponse,
+    PaginatedStudentSessionsResponse,
 )
 
 settings = get_settings()
@@ -67,7 +72,9 @@ app.add_middleware(
     allow_origins=[
         "https://omams-portal.onrender.com",
         # "https://portal.yourdomain.com",  # If using custom domain
-        "http://localhost:8080",  # For local testing
+        "http://localhost:8080", 
+         # For local testing
+         "http://localhost:5500",  # If frontend runs on a different port locally
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -77,6 +84,26 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+#  PAGINATION HELPER
+# ─────────────────────────────────────────────────────────────
+
+def create_pagination_metadata(
+    page: int, page_size: int, total_items: int
+) -> PaginationMetadata:
+    """Create pagination metadata for responses"""
+    import math
+    total_pages = math.ceil(total_items / page_size) if page_size > 0 else 0
+    return PaginationMetadata(
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+        has_next=page < total_pages,
+        has_prev=page > 1,
+    )
 
 
 @app.post("/auth/bootstrap", response_model=BootstrapResponse)
@@ -791,13 +818,18 @@ def get_my_courses(
         raise HTTPException(status_code=500, detail="Failed to retrieve courses.") from e
 
 
-@app.get("/courses/{course_id}/sessions", response_model=list[SessionResponse])
+@app.get("/courses/{course_id}/sessions", response_model=PaginatedSessionsResponse)
 def get_course_sessions(
     course_id: int,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     ctx: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
-) -> list[SessionResponse]:
-    """Get sessions for a course (lecturer only for now)."""
+):
+    """Get sessions for a course with pagination (lecturer only).
+    
+    Returns paginated response by default.
+    """
     try:
         from app.models import Course, Lecturer, Session as DbSession
 
@@ -815,14 +847,25 @@ def get_course_sessions(
         if not course or course.lecturer_id != lecturer.lecturer_id:
             raise HTTPException(status_code=404, detail="Course not found")
 
+        # Get total count
+        total_count = (
+            db.query(DbSession)
+            .filter(DbSession.course_id == course_id)
+            .count()
+        )
+
+        # Get paginated sessions
+        offset = (page - 1) * page_size
         sessions = (
             db.query(DbSession)
             .filter(DbSession.course_id == course_id)
             .order_by(DbSession.start_time.desc())
+            .limit(page_size)
+            .offset(offset)
             .all()
         )
 
-        return [
+        items = [
             SessionResponse(
                 session_id=s.session_id,
                 course_id=s.course_id,
@@ -832,6 +875,10 @@ def get_course_sessions(
             )
             for s in sessions
         ]
+
+        pagination = create_pagination_metadata(page, page_size, total_count)
+        
+        return PaginatedSessionsResponse(items=items, pagination=pagination)
     except HTTPException:
         raise
     except Exception as e:
@@ -890,13 +937,15 @@ def create_session(
         raise HTTPException(status_code=500, detail="Failed to create session.") from e
 
 
-@app.get("/sessions/{session_id}/attendance", response_model=list[AttendanceRow])
+@app.get("/sessions/{session_id}/attendance", response_model=PaginatedAttendanceResponse)
 def get_session_attendance(
     session_id: int,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(100, ge=1, le=500, description="Items per page"),
     ctx: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
-) -> list[AttendanceRow]:
-    """Get attendance records for a session (lecturer only)."""
+):
+    """Get attendance records for a session with pagination (lecturer only)."""
     try:
         from app.models import Attendance, Course, Lecturer, Session as DbSession, Student
 
@@ -918,7 +967,19 @@ def get_session_attendance(
         if not course or course.lecturer_id != lecturer.lecturer_id:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        records = db.query(Attendance).filter(Attendance.session_id == session_id).all()
+        # Get total count
+        total_count = db.query(Attendance).filter(Attendance.session_id == session_id).count()
+
+        # Get paginated records
+        offset = (page - 1) * page_size
+        records = (
+            db.query(Attendance)
+            .filter(Attendance.session_id == session_id)
+            .order_by(Attendance.timestamp.desc())
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        )
 
         rows: list[AttendanceRow] = []
         for rec in records:
@@ -943,7 +1004,9 @@ def get_session_attendance(
                 )
             )
 
-        return rows
+        pagination = create_pagination_metadata(page, page_size, total_count)
+        
+        return PaginatedAttendanceResponse(items=rows, pagination=pagination)
     except HTTPException:
         raise
     except Exception as e:
@@ -951,13 +1014,15 @@ def get_session_attendance(
         raise HTTPException(status_code=500, detail="Failed to retrieve attendance.") from e
 
 
-@app.get("/courses/{course_id}/students", response_model=list[StudentSummary])
+@app.get("/courses/{course_id}/students", response_model=PaginatedStudentsResponse)
 def get_course_students(
     course_id: int,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(100, ge=1, le=500, description="Items per page"),
     ctx: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
-) -> list[StudentSummary]:
-    """Return students who have attendance records in this course.
+):
+    """Return students who have attendance records in this course with pagination.
 
     Since enrollments aren't modeled on the backend yet, we derive the roster from attendance.
     """
@@ -980,7 +1045,8 @@ def get_course_students(
 
         session_ids = [s.session_id for s in db.query(DbSession).filter(DbSession.course_id == course_id).all()]
         if not session_ids:
-            return []
+            pagination = create_pagination_metadata(page, page_size, 0)
+            return PaginatedStudentsResponse(items=[], pagination=pagination)
 
         student_ids = {
             row[0]
@@ -990,9 +1056,23 @@ def get_course_students(
             .all()
         }
         if not student_ids:
-            return []
+            pagination = create_pagination_metadata(page, page_size, 0)
+            return PaginatedStudentsResponse(items=[], pagination=pagination)
 
-        students = db.query(Student).filter(Student.student_id.in_(student_ids)).all()
+        # Get total count
+        total_count = len(student_ids)
+
+        # Get paginated students
+        offset = (page - 1) * page_size
+        students = (
+            db.query(Student)
+            .filter(Student.student_id.in_(student_ids))
+            .order_by(Student.student_id)
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        )
+
         result: list[StudentSummary] = []
         for student in students:
             user_row = db.query(User).filter(User.id == student.user_id).one_or_none()
@@ -1007,7 +1087,9 @@ def get_course_students(
                 )
             )
 
-        return result
+        pagination = create_pagination_metadata(page, page_size, total_count)
+        
+        return PaginatedStudentsResponse(items=result, pagination=pagination)
     except HTTPException:
         raise
     except Exception as e:
@@ -1100,12 +1182,14 @@ def get_student_courses(
         raise HTTPException(status_code=500, detail="Failed to retrieve student courses.") from e
 
 
-@app.get("/student/my-sessions", response_model=list[StudentSessionInfo])
+@app.get("/student/my-sessions", response_model=PaginatedStudentSessionsResponse)
 def get_student_sessions(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
     ctx: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
-) -> list[StudentSessionInfo]:
-    """Get all sessions for courses a student is enrolled in"""
+):
+    """Get all sessions for courses a student is enrolled in with pagination"""
     try:
         from app.models import Attendance, Course, Enrollment, Session as DbSession, Student
         
@@ -1158,17 +1242,28 @@ def get_student_sessions(
         logger.info(f"[/student/my-sessions] Found {len(course_ids)} enrolled courses: {course_ids}")
         
         if not course_ids:
-            logger.info("[/student/my-sessions] No enrollments, returning empty list")
-            return []
+            logger.info("[/student/my-sessions] No enrollments, returning empty result")
+            pagination = create_pagination_metadata(page, page_size, 0)
+            return PaginatedStudentSessionsResponse(items=[], pagination=pagination)
         
-        # Optimized: Fetch all data in bulk to avoid N+1 queries
+        # Get total count
+        total_count = db.query(DbSession).filter(DbSession.course_id.in_(course_ids)).count()
         
-        # Get all sessions for enrolled courses
-        sessions = db.query(DbSession).filter(DbSession.course_id.in_(course_ids)).order_by(DbSession.start_time.desc()).all()
-        logger.info(f"[/student/my-sessions] Found {len(sessions)} total sessions for enrolled courses")
+        # Get paginated sessions
+        offset = (page - 1) * page_size
+        sessions = (
+            db.query(DbSession)
+            .filter(DbSession.course_id.in_(course_ids))
+            .order_by(DbSession.start_time.desc())
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        )
+        logger.info(f"[/student/my-sessions] Found {len(sessions)} sessions for page {page}")
         
         if not sessions:
-            return []
+            pagination = create_pagination_metadata(page, page_size, total_count)
+            return PaginatedStudentSessionsResponse(items=[], pagination=pagination)
         
         # Fetch all courses in one query
         courses_list = db.query(Course).filter(Course.course_id.in_(course_ids)).all()
@@ -1206,7 +1301,9 @@ def get_student_sessions(
             )
         
         logger.info(f"[/student/my-sessions] Returning {len(result)} sessions")
-        return result
+        pagination = create_pagination_metadata(page, page_size, total_count)
+        
+        return PaginatedStudentSessionsResponse(items=result, pagination=pagination)
     except HTTPException:
         raise
     except Exception as e:
