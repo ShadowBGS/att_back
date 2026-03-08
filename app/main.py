@@ -933,8 +933,47 @@ def create_session(
         raise HTTPException(status_code=500, detail="Failed to create session (database error).") from e
     except Exception as e:
         logger.exception("Create session error")
-        db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create session.") from e
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: int,
+    ctx: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Delete an attendance session (lecturer only)."""
+    try:
+        from app.models import Course, Lecturer, Session as DbSession
+
+        user = db.query(User).filter(User.firebase_uid == ctx.firebase_uid).one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.role != 'lecturer':
+            raise HTTPException(status_code=403, detail="Only lecturers can delete sessions")
+
+        lecturer = db.query(Lecturer).filter(Lecturer.user_id == user.id).one_or_none()
+        if not lecturer:
+            raise HTTPException(status_code=404, detail="Lecturer profile not found")
+
+        sess = db.query(DbSession).filter(DbSession.session_id == session_id).one_or_none()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        course = db.query(Course).filter(Course.course_id == sess.course_id).one_or_none()
+        if not course or course.lecturer_id != lecturer.lecturer_id:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this session")
+
+        db.delete(sess)
+        db.commit()
+
+        return {"detail": "Session deleted successfully."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Delete session error")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete session.") from e
 
 
 @app.get("/sessions/{session_id}/attendance", response_model=PaginatedAttendanceResponse)
